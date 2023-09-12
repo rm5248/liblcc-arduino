@@ -39,8 +39,12 @@ enum lcc_producer_state{
 /**
  * A function that will be called in order to write the specified CAN frame out
  * to the bus in an implementation-specific manner
+ *
+ * @return LCC_OK if the frame was able to be sent to the bus(queued up is OK).
+ * If there was an error(for example, the queue to send data to the bus is full),
+ * this function should return LCC_ERROR_TX.
  */
-typedef void(*lcc_write_fn)(struct lcc_context*, struct lcc_can_frame*);
+typedef int(*lcc_write_fn)(struct lcc_context*, struct lcc_can_frame*);
 
 /**
  * A function that will be called when an event that we are interested in comes in.
@@ -107,6 +111,8 @@ typedef void (*lcc_address_space_write)(struct lcc_memory_context* ctx, uint16_t
 #define LCC_ERROR_STRING_TOO_LONG -7
 #define LCC_ERROR_EVENT_ID_INVALID -8
 #define LCC_ERROR_NO_DATAGRAM_HANDLING -9
+/** Data was unable to be transmitted.  For example, a queue may be full */
+#define LCC_ERROR_TX -10
 
 /**
  * Struct used to pass frames to/from the library.
@@ -121,6 +127,17 @@ struct lcc_can_frame {
         uint8_t data[8];
 };
 
+#ifdef ARDUINO_AVR_UNO
+// There is not much RAM on the uno, so we will make this struct much much smaller
+struct lcc_simple_node_info {
+    char manufacturer_name[20];
+    char model_name[20];
+    char hw_version[5];
+    char sw_version[5];
+    char node_name[20];
+    char node_description[20];
+};
+#else
 struct lcc_simple_node_info {
     char manufacturer_name[41];
     char model_name[41];
@@ -129,6 +146,7 @@ struct lcc_simple_node_info {
     char node_name[63];
     char node_description[64];
 };
+#endif
 
 /*
  * Important bitmasks/fields
@@ -190,6 +208,8 @@ struct lcc_simple_node_info {
 
 #define LCC_ADDRESS_SPACE_PRESENT 0x86
 #define LCC_ADDRESS_SPACE_NOT_PRESENT 0x87
+
+#define LCC_DATAGRAM_REPLY_PENDING 0x80
 
 /**
  * Convert a node id to dotted format, putting the result in 'buffer'

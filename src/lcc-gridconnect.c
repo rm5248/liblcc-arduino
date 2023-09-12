@@ -75,7 +75,7 @@ int lcc_canframe_to_gridconnect(struct lcc_can_frame* frame, char* output, int o
 
     data_bytes[null_spot] = 0;
 
-    snprintf(output, out_len, ":X%XN%s;", frame->can_id, data_bytes);
+    snprintf(output, out_len, ":X%lXN%s;", frame->can_id, data_bytes);
 
     return LCC_OK;
 }
@@ -88,6 +88,7 @@ int lcc_gridconnect_to_canframe(char* ascii, struct lcc_can_frame* frame){
     int num_bytes = 0;
 
     memset(frame, 0, sizeof(struct lcc_can_frame));
+    memset(str_buffer, 0, sizeof(str_buffer));
 
     int len = strlen(ascii);
     if(ascii[0] != ':' ||
@@ -104,11 +105,16 @@ int lcc_gridconnect_to_canframe(char* ascii, struct lcc_can_frame* frame){
     }
 
     x++;
-    while(ascii[x] != 'N'){
+    while(ascii[x] != 'N' && str_buffer_pos < 11){
         str_buffer[str_buffer_pos] = ascii[x];
         str_buffer_pos++;
         x++;
     }
+
+    if(str_buffer_pos >= sizeof(str_buffer)){
+        return LCC_ERROR_INVALID_ARG;
+    }
+
     str_buffer[str_buffer_pos + 1] = 0;
     str_buffer_pos = 0;
     frame->can_id = strtol(str_buffer, NULL, 16);

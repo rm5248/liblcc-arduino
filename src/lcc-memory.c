@@ -8,9 +8,23 @@
 #include "lcc-common-internal.h"
 #include "lcc-datagram.h"
 
-//static void lcc_memory_datagram_finished(struct lcc_context* ctx, void* datagram_data, int len){
+#ifdef ARDUINO
+#include <avr/pgmspace.h>
 
-//}
+static uint8_t lcc_memory_byte_from_data(void* data, int offset, int flags){
+    uint8_t* u8_data = data;
+    if(flags & LCC_MEMORY_CDI_FLAG_ARDUINO_PROGMEM){
+        return pgm_read_byte(u8_data + offset);
+    }else{
+        return u8_data[offset];
+    }
+}
+#else
+static uint8_t lcc_memory_byte_from_data(void* data, int offset, int flags){
+    uint8_t* u8_data = data;
+    return u8_data[offset];
+}
+#endif /* ARDUINO */
 
 struct lcc_memory_context* lcc_memory_new(struct lcc_context* ctx){
     if(ctx->datagram_context == NULL){
@@ -133,13 +147,14 @@ int lcc_memory_get_address_space_information(struct lcc_context* ctx, int alias,
     return LCC_OK;
 }
 
-int lcc_memory_set_cdi(struct lcc_memory_context* ctx, void* cdi_data, int flags){
+int lcc_memory_set_cdi(struct lcc_memory_context* ctx, void* cdi_data, int cdi_len, int flags){
     if(ctx == NULL){
         return LCC_ERROR_INVALID_ARG;
     }
 
     ctx->cdi_data = cdi_data;
     ctx->cdi_flags = flags;
+    ctx->cdi_length = cdi_len;
 
     return LCC_OK;
 }
@@ -231,13 +246,13 @@ int lcc_memory_respond_write_reply_fail(struct lcc_memory_context* ctx,
     response[0] = 0x20;
     int start = 6;
     if(space == LCC_MEMORY_SPACE_CONFIGURATION_SPACE){
-        response[1] = 0x11;
+        response[1] = 0x19;
     }else if(space == LCC_MEMORY_SPACE_ALL_MEMORY){
-        response[1] = 0x12;
+        response[1] = 0x1A;
     }else if(space == LCC_MEMORY_SPACE_CONFIGURATION_DEFINITION){
-        response[1] = 0x13;
+        response[1] = 0x1B;
     }else{
-        response[1] = 0x10;
+        response[1] = 0x18;
         response[6] = space;
         start = 7;
     }
@@ -289,7 +304,15 @@ int lcc_memory_respond_read_reply_ok(struct lcc_memory_context* ctx,
 
     lcc_uint32_to_data(response + 2, starting_address);
 
-    memcpy(response + start, data, data_len);
+    if(space == LCC_MEMORY_SPACE_CONFIGURATION_DEFINITION){
+        // Use our (somewhat inefficient) method for getting bytes from the CDI
+        // so we can read from PROGMEM on Arduino
+        for(int x = 0; x < data_len; x++ ){
+            response[start + x] = lcc_memory_byte_from_data(data, x, ctx->cdi_flags);
+        }
+    }else{
+        memcpy(response + start, data, data_len);
+    }
 
     return lcc_datagram_load_and_send(ctx->parent->datagram_context,
                                alias,
@@ -338,15 +361,13 @@ int lcc_memory_respond_read_reply_fail(struct lcc_memory_context* ctx,
 }
 
 static int lcc_memory_handle_datagram_cdi_memory_space(struct lcc_memory_context* ctx, uint16_t alias, uint8_t* data, int data_len){
-    int cdi_len = strlen(ctx->cdi_data);
-
-    lcc_datagram_respond_rxok(ctx->parent->datagram_context, alias);
+    lcc_datagram_respond_rxok(ctx->parent->datagram_context, alias, LCC_DATAGRAM_REPLY_PENDING);
 
     int resp = lcc_memory_respond_information_query(ctx,
                                                     alias,
                                                     1,
                                                     LCC_MEMORY_SPACE_CONFIGURATION_DEFINITION,
-                                                    cdi_len,
+                                                    ctx->cdi_length,
                                                     0,
                                                     0);
 
@@ -380,7 +401,7 @@ static int lcc_memory_handle_datagram_read_cdi_space(struct lcc_memory_context* 
     // At this point, we have determined that we have a valid read command for the CDI
     // that we can do something with.
     // First respond with the OK datagram.
-    lcc_datagram_respond_rxok(ctx->parent->datagram_context, alias);
+    lcc_datagram_respond_rxok(ctx->parent->datagram_context, alias, LCC_DATAGRAM_REPLY_PENDING);
 
     // Let's go and read the data and return it.
     uint32_t starting_address = lcc_uint32_from_data(data + 2);
@@ -403,9 +424,18 @@ int lcc_memory_try_handle_datagram(struct lcc_memory_context* ctx, uint16_t alia
         return 0;
     }
 
+    // Check to see if this is a 'get configuration options' command
+    if(data[1] == 0x80){
+        // TODO finish this option
+    }
+
     if(data[1] == 0x84 &&
             data[2] == LCC_MEMORY_SPACE_CONFIGURATION_DEFINITION){
         return lcc_memory_handle_datagram_cdi_memory_space(ctx, alias, data, data_len);
+    }else if(data[1] == 0x84){
+        // return information for the given address space
+        ctx->query_fn(ctx, alias, data[2]);
+        return LCC_OK;
     }
 
     int handled = 0;
@@ -432,17 +462,34 @@ int lcc_memory_try_handle_datagram(struct lcc_memory_context* ctx, uint16_t alia
         is_read = 1;
         count = data[7];
         data_offset = 7;
+    }else if(data[1] == 0x01){
+        space = LCC_MEMORY_SPACE_CONFIGURATION_SPACE;
+    }else if(data[1] == 0x02){
+        space = LCC_MEMORY_SPACE_ALL_MEMORY;
+    }else if(data[1] == 0x03){
+        space = LCC_MEMORY_SPACE_CONFIGURATION_DEFINITION;
+    }else if(data[1] == 0x00){
+        space = data[6];
+        data_offset = 7;
     }
 
     if(is_read && ctx->read_fn){
+        // Send a 'datagram received ok' message with the 'reply pending' bit set,
+        // indicating that we will have a follow-in message with the response of the read
+        lcc_datagram_respond_rxok(ctx->parent->datagram_context, alias, LCC_DATAGRAM_REPLY_PENDING);
+
         ctx->read_fn(ctx, alias, space, starting_address, count);
     }else if(!is_read && ctx->write_fn){
+        // We must first send a 'datagram received ok' message with the
+        // REPLY_PENDING bit set in order to indicate that we will have a follow-on message
+        // with the respones of the write.
+        lcc_datagram_respond_rxok(ctx->parent->datagram_context, alias, LCC_DATAGRAM_REPLY_PENDING);
+
         ctx->write_fn(ctx, alias, space, starting_address, data + data_offset, data_len - data_offset);
     }else{
         // Unable to handle, send rejection back
-        lcc_datagram_respond_rejected(ctx->parent->datagram_context, alias);
-        return 1;
+        lcc_datagram_respond_rejected(ctx->parent->datagram_context, alias, 0x00, NULL);
     }
 
-    return 0;
+    return 1;
 }
