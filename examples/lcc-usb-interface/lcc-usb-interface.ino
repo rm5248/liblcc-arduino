@@ -10,7 +10,7 @@
 
 #include <lcc-gridconnect.h>
 
-static const byte MCP2515_CS  = 9 ; // CS input of MCP2515 (adapt to your design) 
+static const byte MCP2515_CS  = 8 ; // CS input of MCP2515 (adapt to your design)
 static const byte MCP2515_INT =  2 ; // INT output of MCP2515 (adapt to your design)
 
 // The CAN controller.  This example uses the ACAN2515 library from Pierre Molinaro:
@@ -59,8 +59,18 @@ void setup() {
   ACAN2515Settings settings (QUARTZ_FREQUENCY, 125UL * 1000UL) ; // CAN bit rate 125 kb/s
   settings.mRequestedMode = ACAN2515Settings::NormalMode;
   // For the computer interface, we need to increase our buffer sizes so that we can be assured we get all of the data
-  settings.mReceiveBufferSize = 16;
+  settings.mReceiveBufferSize = 64;
   settings.mTransmitBuffer0Size = 16;
+  // OpenLCB uses the following CAN propogation settings with the MCP2515:
+  // CFN3 = 0x02
+  // CFN2 = 0x90
+  // CFN1 = 0x07
+  settings.mPropagationSegment = 1;
+  settings.mPhaseSegment1 = 3;
+  settings.mPhaseSegment2 = 3;
+  settings.mSJW = 1;
+  settings.mTripleSampling = false;
+  settings.mBitRatePrescaler = 8;
   const uint16_t errorCode = can.begin (settings, [] { can.isr () ; }) ;
   if (errorCode != 0) {
     Serial.print ("Configuration error 0x") ;
@@ -80,7 +90,8 @@ void loop() {
     memcpy(&lcc_frame.data, frame.data, 8);
 
     if(lcc_canframe_to_gridconnect(&lcc_frame, gridconnect_out, sizeof(gridconnect_out)) == LCC_OK){
-      Serial.println(gridconnect_out);
+      Serial.print(gridconnect_out);
+      Serial.print("\n\n");
     }
   }
 
@@ -101,7 +112,7 @@ void loop() {
       gridconnect_in_pos = 0;
     }
 
-    if(byte == ';' && byte > 0){
+    if(byte == ';' && gridconnect_in_pos > 0){
       // We have a full frame.  Parse and send out to the CAN bus
       int stat = lcc_gridconnect_to_canframe(gridconnect_in, &lcc_frame_in);
       gridconnect_in_pos = 0;
@@ -113,7 +124,7 @@ void loop() {
     }
   }
 
-  if(millis() >= d5_off_millis){
+  if(currentMillis >= d5_off_millis){
     digitalWrite(5, 0);
   }
 
