@@ -16,10 +16,28 @@
 #define LCC_SIMPLE_NODE_INFO_SMALL 1
 #endif
 
+#define SIMPLELOGGER_LOG_FUNCTION_NAME lcc_global_log
+#include "simplelogger.h"
+
+#ifdef LIBLCC_DEBUG
+#define LOG_TRACE(logger, ...) \
+do{ char buffer[128]; snprintf(buffer, sizeof(buffer), __VA_ARGS__); SIMPLELOGGER_LOG_CSTR( logger, buffer, SL_TRACE); } while(0)
+#define LOG_DEBUG(logger, ...) \
+do{ char buffer[128]; snprintf(buffer, sizeof(buffer), __VA_ARGS__); SIMPLELOGGER_LOG_CSTR( logger, buffer, SL_DEBUG); } while(0)
+#define LOG_INFO(logger, ...) \
+do{ char buffer[128]; snprintf(buffer, sizeof(buffer), __VA_ARGS__); SIMPLELOGGER_LOG_CSTR( logger, buffer, SL_DEBUG); } while(0)
+#else
+#define LOG_TRACE(logger, ...)
+#define LOG_DEBUG(logger, ...)
+#define LOG_INFO(logger, ...)
+#endif
+
 /* This is just an internal file, but arduino seems to use a C++ compiler so we need to make sure functions are C */
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+extern simplelogger_log_function lcc_global_log;
 
 // Figure out how big our lcc_simple_node_info needs to be.
 // Normally, this struct is 251 bytes long.  For memory constrained devices(currently the Uno)
@@ -62,6 +80,7 @@ struct lcc_datagram_context{
     lcc_incoming_datagram_fn datagram_received_fn;
     lcc_datagram_received_ok_fn datagram_ok_fn;
     lcc_datagram_rejected_fn datagram_rejected_fn;
+    int currently_handling_incoming_datagram;
 };
 
 struct lcc_memory_context{
@@ -74,6 +93,15 @@ struct lcc_memory_context{
     lcc_address_space_write write_fn;
     lcc_reboot reboot_fn;
     lcc_factory_reset factory_reset_fn;
+};
+
+struct lcc_remote_memory_context{
+    struct lcc_context* parent;
+    lcc_remote_memory_request_ok remote_request_ok;
+    lcc_remote_memory_request_fail remote_request_fail;
+    lcc_remote_memory_received remote_memory_received;
+    lcc_remote_memory_read_rejected read_rejected;
+    int16_t current_requesting_alias;
 };
 
 struct lcc_event_context{
@@ -96,6 +124,7 @@ struct lcc_context{
     };
     int16_t node_alias;
     lcc_write_fn write_function;
+    lcc_write_buffer_available write_buffer_avail_function;
     void* user_data;
 
     // Simple node information
@@ -109,6 +138,9 @@ struct lcc_context{
 
     // Memory handling
     struct lcc_memory_context* memory_context;
+
+    // Remote memory handling
+    struct lcc_remote_memory_context* remote_memory_context;
 };
 
 #define LCC_FLAG_FRAME_ONLY 0
@@ -149,6 +181,14 @@ int lcc_handle_datagram(struct lcc_context* ctx, struct lcc_can_frame* frame);
  * Return 1 if it was handled, 0 if it was not.
  */
 int lcc_memory_try_handle_datagram(struct lcc_memory_context* ctx, uint16_t alias, uint8_t* data, int data_len);
+
+/**
+ * Try to handle a datagram with the remote memory subsystem.
+ * Return 1 if it was handled, 0 if it was not.
+ */
+int lcc_remote_memory_try_handle_datagram(struct lcc_remote_memory_context* ctx, uint16_t alias, uint8_t* data, int data_len);
+int lcc_remote_memory_handle_datagram_rx_ok(struct lcc_remote_memory_context* ctx, uint16_t alias, uint8_t flags);
+int lcc_remote_memory_handle_datagram_rejected(struct lcc_remote_memory_context* ctx, uint16_t alias, uint16_t error_code, void* optional_data, int optional_len);
 
 /**
  * Read a uint32(in big-endian order) from data.  Data must be at least 4 bytes.

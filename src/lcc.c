@@ -9,11 +9,58 @@
 #include "lcc-simple.h"
 #include "lcc-addressed.h"
 
+static void lcc_send_amd_frame(struct lcc_context* ctx){
+    struct lcc_can_frame amd_frame;
+    amd_frame.can_len = 0;
+    amd_frame.res0 = 0;
+    amd_frame.res1 = 0;
+    amd_frame.res2 = 0;
+
+    // AMD frame
+    lcc_set_lcb_variable_field(&amd_frame, ctx, 0x701);
+    amd_frame.can_id &= (~(0x01l << 27));
+    lcc_set_nodeid_in_data(&amd_frame, ctx->unique_id);
+    ctx->write_function(ctx, &amd_frame);
+}
+
+static void lcc_handle_control_frame(struct lcc_context* ctx, struct lcc_can_frame* frame){
+    uint16_t frame_type = (frame->can_id & LCC_VARIABLE_FIELD_MASK) >> 12;
+
+    if(frame_type == 0x702){
+        // Alias Mapping Enquiry(AME) frame
+        uint64_t node_id = 0;
+        if(frame->can_len == 6){
+            node_id = lcc_get_node_id_from_data(frame);
+        }
+
+        if(ctx->state != LCC_STATE_PERMITTED){
+            return;
+        }
+
+        // If the full node ID is equal to our ID and we are in the permitted state,
+        // respond with AMD frame
+        if(ctx->state == LCC_STATE_PERMITTED){
+            lcc_send_amd_frame(ctx);
+        }
+
+        // If there is no data content, also respond with an AMD frame
+        if(frame->can_len == 0){
+            lcc_send_amd_frame(ctx);
+        }
+    }else if(frame_type == 0x703){
+        // Alias Map Reset(AMR) frame
+
+    }
+}
+
 static void lcc_context_check_collision(struct lcc_context* ctx, struct lcc_can_frame* frame){
     int is_frame_control = 1;
     uint16_t node_alias = frame->can_id & 0xFFF;
-    int cid_frame_number = (frame->can_id >> 24) & 0x07;
-    int is_cid_frame = is_frame_control && cid_frame_number <= 0x07 && cid_frame_number >= 0x04;
+    int cid_frame_number = (frame->can_id >> 24ll) & 0x07;
+    int is_cid_frame;
+
+
+    is_cid_frame = is_frame_control && cid_frame_number <= 0x07 && cid_frame_number >= 0x04;
 
     if(frame->can_id & (0x01l << 27) ){
         // bit 27: 1 for LCC message, 0 for CAN control frame
@@ -136,8 +183,8 @@ int lcc_context_incoming_frame(struct lcc_context* ctx, struct lcc_can_frame* fr
     }
 
     // Decode the CAN frame and maybe do something useful with it.
-    if((frame->can_id & LCC_FRAME_TYPE_MASK) == 0){
-        // TODO need to be smart about non LCC frames
+    if((frame->can_id & LCC_FRAME_TYPE_MASK) == 0ll){
+        lcc_handle_control_frame(ctx, frame);
         return LCC_OK;
     }
 
@@ -149,6 +196,7 @@ int lcc_context_incoming_frame(struct lcc_context* ctx, struct lcc_can_frame* fr
     // TODO the handlers below should probably be in a list of some kind,
     // so that we just call them sequentially until somebody can handle the request
     if(is_datagram_frame(frame)){
+        LOG_DEBUG("lcc.context", "Going to try to handle datagram" );
         return lcc_handle_datagram(ctx, frame);
     }
 
@@ -170,12 +218,13 @@ int lcc_context_incoming_frame(struct lcc_context* ctx, struct lcc_can_frame* fr
     return LCC_OK;
 }
 
-int lcc_context_set_write_function(struct lcc_context* ctx, lcc_write_fn write_fn){
+int lcc_context_set_write_function(struct lcc_context* ctx, lcc_write_fn write_fn, lcc_write_buffer_available write_buffer_avail_fn){
     if( !write_fn || !ctx ){
         return LCC_ERROR_INVALID_ARG;
     }
 
     ctx->write_function = write_fn;
+    ctx->write_buffer_avail_function = write_buffer_avail_fn;
 
     return LCC_OK;
 }
@@ -215,8 +264,14 @@ int lcc_context_generate_alias(struct lcc_context* ctx){
 
     if( ctx->node_alias == 0 ){
         // Let's generate a starting alias number.
-        ctx->node_alias = ctx->unique_id & 0xFFF;
-        ctx->node_alias ^= 0xA5C;
+        // Simple LCG: https://en.wikipedia.org/wiki/Linear_congruential_generator
+        // https://rosettacode.org/wiki/Linear_congruential_generator#C
+        uint16_t alias = 0;
+        alias = ctx->unique_id & 0xFFF;
+        uint32_t new_val = (alias * 1103515245llu + 12345);
+        alias = new_val & 0xFFF;
+
+        ctx->node_alias = alias;
     }else{
         ctx->node_alias++;
     }
@@ -506,5 +561,46 @@ struct lcc_event_context* lcc_context_get_event_context(struct lcc_context* ctx)
     }
 
     return ctx->event_context;
+}
+
+struct lcc_remote_memory_context* lcc_context_get_remote_memory_context(struct lcc_context* ctx){
+    if(!ctx){
+        return NULL;
+    }
+
+    return ctx->remote_memory_context;
+}
+
+uint32_t lcc_library_version(){
+    // On Arduino, we can't get the library version from the cmake configuration file.
+    // We can at least check the versions when using CMake.
+#define MAJOR 0ll
+#define MINOR 5ll
+#define MICRO 0ll
+
+#ifdef LIBLCC_MAJOR
+
+#if LIBLCC_MAJOR != MAJOR
+#error "Major number bad!"
+#endif
+
+#if LIBLCC_MINOR != MINOR
+#error "Minor number bad!"
+#endif
+
+#if LIBLCC_MICRO != MICRO
+#error "Micro number bad!"
+#endif
+
+#endif
+
+    const uint32_t lib_version = MAJOR << 16 |
+                                          MINOR << 8 |
+                                          MICRO << 0;
+    return lib_version;
+}
+
+void lcc_set_log_function(simplelogger_log_function log_fn){
+    lcc_global_log = log_fn;
 }
 

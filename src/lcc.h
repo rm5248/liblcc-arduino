@@ -6,6 +6,10 @@
 
 #include "lcc-common.h"
 
+#define LCC_VERSION_MAJOR(version) ((version & 0xFF0000) >> 16)
+#define LCC_VERSION_MINOR(version) ((version & 0x00FF00) >> 8)
+#define LCC_VERSION_MICRO(version) ((version & 0x0000FF) >> 0)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -29,11 +33,17 @@ void lcc_context_free(struct lcc_context* ctx);
 int lcc_context_incoming_frame(struct lcc_context* ctx, struct lcc_can_frame* frame);
 
 /**
- * Set a function that will be called in order to write a CAN frame out on the bus
- * @param write_fn
+ * Set functions that handle writing a CAN frame out on the bus.
+ *
+ * @param write_fn The function that will write out CAN frames to the bus
+ * @param write_buffer_avail_fn A function that will return how many CAN frames can be queued up to be sent.
+ * If there is not enough space to queue up CAN frames for a specific message, the message will not be queued.
+ * This parameter may be NULL, in which case the size is not checked.  This is currently only relevant for datagram messages,
+ * as it is possible to determine how many frames we need before we try to send them.
+ *
  * @return
  */
-int lcc_context_set_write_function(struct lcc_context* ctx, lcc_write_fn write_fn);
+int lcc_context_set_write_function(struct lcc_context* ctx, lcc_write_fn write_fn, lcc_write_buffer_available write_buffer_avail_fn);
 
 /**
  * Set the unique identifier of this node.
@@ -152,6 +162,14 @@ struct lcc_memory_context* lcc_context_get_memory_context(struct lcc_context* ct
  * @return
  */
 struct lcc_event_context* lcc_context_get_event_context(struct lcc_context* ctx);
+
+struct lcc_remote_memory_context* lcc_context_get_remote_memory_context(struct lcc_context* ctx);
+
+/**
+ * Get the version of LibLCC.
+ * @return
+ */
+uint32_t lcc_library_version();
 
 #ifdef __cplusplus
 } /* extern C */
