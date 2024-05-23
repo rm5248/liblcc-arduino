@@ -8,7 +8,21 @@
  *
  * This example handles just a single track crossing.
  */
+
+ // Updated 2024-05-06
+
+#define CAN_CHIP_MCP2518 2518
+#define CAN_CHIP_MCP2515 2515
+
+// Select which CAN chip to use.  The new Snowball Creek shields(Rev 4) use the MCP2518(compatible with MCP2517)
+// Earlier shields use the MCP2515
+#define CAN_CHIP CAN_CHIP_MCP2515
+
+#if CAN_CHIP == CAN_CHIP_MCP2518
+#include <ACAN2517.h>
+#else if CAN_CHIP == CAN_CHIP_MCP1515
 #include <ACAN2515.h>
+#endif
 #include <M95_EEPROM.h>
 #include <lcc.h>
 #include <lcc-common-internal.h>
@@ -99,8 +113,16 @@ enum Direction{
   DIRECTION_RTL,
 };
 
-static const byte MCP2515_CS  = 8 ; // CS input of MCP2515 (adapt to your design) 
-static const byte MCP2515_INT =  2 ; // INT output of MCP2515 (adapt to your design)
+struct id_page{
+  uint64_t node_id;
+  uint16_t id_version;
+  char manufacturer[32];
+  char part_number[21];
+  char hw_version[12];
+};
+
+static const byte MCP_CS  = 8 ; // CS input of CAN controller
+static const byte MCP_INT =  2 ; // INT output of CAN controller
 static const byte EEPROM_CS = 7;
 static const byte CROSSING_OCCUPIED_OUTPUT = 5;
 
@@ -108,9 +130,14 @@ static const byte CROSSING_OCCUPIED_OUTPUT = 5;
 static const int CROSSING_EVENTS_ADDR = 0x0;
 static const int NODE_NAME_DESCRIPTION_ADDR = 0x1000;
 
-// The CAN controller.  This example uses the ACAN2515 library from Pierre Molinaro:
+// The CAN controller.  This example uses the ACAN2515 or ACAN2517 library from Pierre Molinaro:
 // https://github.com/pierremolinaro/acan2515
-ACAN2515 can (MCP2515_CS, SPI, MCP2515_INT) ;
+// https://github.com/pierremolinaro/acan2517
+#if CAN_CHIP == CAN_CHIP_MCP2518
+ACAN2517 can (MCP_CS, SPI, MCP_INT) ;
+#else if CAN_CHIP == CAN_CHIP_MCP1515
+ACAN2515 can (MCP_CS, SPI, MCP_INT) ;
+#endif
 M95_EEPROM eeprom(SPI, EEPROM_CS, 256, 3, true);
 
 static const uint32_t QUARTZ_FREQUENCY = 16UL * 1000UL * 1000UL ; // 16 MHz
@@ -153,6 +180,17 @@ int lcc_write(struct lcc_context*, struct lcc_can_frame* lcc_frame){
 
   Serial.println("Unable to transmit frame");
   return LCC_ERROR_TX;
+}
+
+/**
+ * This is a callback function that is called by liblcc in order query how big our transmit buffer is
+ */
+int lcc_buffer_size(struct lcc_context* ctx){
+#if CAN_CHIP == CAN_CHIP_MCP2518
+  return can.driverTransmitBufferSize() - can.driverTransmitBufferCount();
+#else if CAN_CHIP == CAN_CHIP_MCP2515
+  return can.transmitBufferSize(0) - can.transmitBufferCount(0);
+#endif
 }
 
 void handle_ltr(int left_input, int left_island_input, int right_island_input, int right_input){
@@ -299,7 +337,7 @@ void mem_address_space_read(struct lcc_memory_context* ctx, uint16_t alias, uint
   if(address_space == 251){
     // This space is what we use for node name/description
     uint8_t buffer[64];
-    eeprom.read(starting_address, buffer, read_count);
+    eeprom.read(starting_address, read_count, buffer);
 
     // For any blank data, we will read 0xFF
     // In this example, we know that we have strings, so replace all 0xFF with 0x00
@@ -339,7 +377,7 @@ void mem_address_space_read(struct lcc_memory_context* ctx, uint16_t alias, uint
 
 void mem_address_space_write(struct lcc_memory_context* ctx, uint16_t alias, uint8_t address_space, uint32_t starting_address, void* data, int data_len){
   if(address_space == 251){
-    eeprom.write(starting_address, data, data_len);
+    eeprom.write(starting_address, data_len, data );
 
     lcc_memory_respond_write_reply_ok(ctx, alias, address_space, starting_address);
   }else if(address_space == 253){
@@ -355,7 +393,7 @@ void mem_address_space_write(struct lcc_memory_context* ctx, uint16_t alias, uin
     memcpy(events_u8 + starting_address, data, data_len);
 
     // Write out to EEPROM
-    eeprom.write(CROSSING_EVENTS_ADDR, &events, sizeof(events));
+    eeprom.write(CROSSING_EVENTS_ADDR, sizeof(events), &events);
 
     lcc_memory_respond_write_reply_ok(ctx, alias, address_space, starting_address);
   }else{
@@ -406,6 +444,10 @@ void setup() {
     delay (50) ;
     digitalWrite (LED_BUILTIN, !digitalRead (LED_BUILTIN)) ;
   }
+ 
+  // Delay our startup.  The EEPROM seems to get into a bad state where it will not talk
+  // if we come up and come down(which happens when flashing from Arduino IDE)
+  delay(3000);
 
   SPI.begin();
   eeprom.begin();
@@ -426,14 +468,22 @@ void setup() {
   // found in the LCC specifications, specifically the unique identifiers standard
   // We will read the unique ID from the ID page of the EEPROM.
   uint64_t unique_id;
-  eeprom.read_id_page(8, &unique_id);
-
-  Serial.print("ID: ");
-  for(int x = 0; x < 8; x++){
-    uint8_t* as_u8 = (uint8_t*)&unique_id;
-    Serial.print(as_u8[x], HEX);
-  }
+  struct id_page id;
+  eeprom.read_id_page(sizeof(id), &id);
+  unique_id = id.node_id;
+  Serial.print("LCC ID: ");
+  char buffer[20];
+  lcc_node_id_to_dotted_format(unique_id, buffer, sizeof(buffer));
+  Serial.print(buffer);
   Serial.println();
+  Serial.print("ID page version: ");
+  Serial.println(id.id_version);
+  Serial.print("Manufacturer: ");
+  Serial.println(id.manufacturer);
+  Serial.print("Part number: ");
+  Serial.println(id.part_number);
+  Serial.print("HW Version: ");
+  Serial.println(id.hw_version);
 
   // Create an LCC context that determines our communications
   ctx = lcc_context_new();
@@ -442,14 +492,14 @@ void setup() {
   lcc_context_set_unique_identifer(ctx, unique_id);
 
   // Set the callback function that will be called to write  frame out to the bus
-  lcc_context_set_write_function(ctx, lcc_write);
+  lcc_context_set_write_function(ctx, lcc_write, lcc_buffer_size);
 
   // Set simple node information that is handled by the 'simple node information protocol'
   lcc_context_set_simple_node_information(ctx,
-                                        "Snowball Creek",
-                                        "Simple Crossing",
-                                        "1.0",
-                                        "0.1");
+                                        id.manufacturer,
+                                        id.part_number,
+                                        id.hw_version,
+                                        "1.0");
 
   // Optional: create other contexts to handle other parts of LCC communication
   // Contexts:
@@ -469,7 +519,7 @@ void setup() {
     mem_address_space_write);
 
   // Load our events
-  eeprom.read(CROSSING_EVENTS_ADDR, &events, sizeof(events));
+  eeprom.read(CROSSING_EVENTS_ADDR, sizeof(events), &events);
   initialize_events_if_needed(unique_id);
 
   lcc_event_add_event_produced(evt_ctx, events.ltr_events.pre_island);
@@ -481,6 +531,9 @@ void setup() {
   lcc_event_add_event_produced(evt_ctx, events.rtl_events.post_island);
   lcc_event_add_event_produced(evt_ctx, events.rtl_events.unoccupied);
 
+#if CAN_CHIP == CAN_CHIP_MCP2518
+  ACAN2517Settings settings (ACAN2517Settings::OSC_40MHz_DIVIDED_BY_2, 125UL * 1000UL) ; // CAN bit rate 125 kb/s
+#else if CAN_CHIP == CAN_CHIP_MCP2515
   ACAN2515Settings settings (QUARTZ_FREQUENCY, 125UL * 1000UL) ; // CAN bit rate 125 kb/s
   settings.mRequestedMode = ACAN2515Settings::NormalMode;
   // We need to lower the transmit and receive buffer size(at least on the Uno), as otherwise
@@ -492,11 +545,13 @@ void setup() {
   // CFN2 = 0x90
   // CFN1 = 0x07
   settings.mPropagationSegment = 1;
+  settings.mTripleSampling = false;
   settings.mPhaseSegment1 = 3;
   settings.mPhaseSegment2 = 3;
   settings.mSJW = 1;
-  settings.mTripleSampling = false;
   settings.mBitRatePrescaler = 8;
+#endif
+
   const uint16_t errorCode = can.begin (settings, [] { can.isr () ; }) ;
   if (errorCode != 0) {
     Serial.print ("Configuration error 0x") ;

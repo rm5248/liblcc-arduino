@@ -10,14 +10,11 @@
 #else if CAN_CHIP == CAN_CHIP_MCP1515
 #include <ACAN2515.h>
 #endif
-
 #include <M95_EEPROM.h>
 #include <lcc.h>
 #include <lcc-common-internal.h>
 #include <lcc-datagram.h>
 #include <lcc-event.h>
-
-// Updated 2024-05-06
 
 static const byte MCP_CS  = 8 ; // CS input of CAN controller
 static const byte MCP_INT =  2 ; // INT output of CAN controller
@@ -44,6 +41,9 @@ unsigned long claim_alias_time;
 static uint32_t gBlinkLedDate = 0 ;
 int inputValue = 0;
 
+const char cdi[] PROGMEM = { "<?xml version='1.0'?>"
+};
+
 struct id_page{
   uint64_t node_id;
   uint16_t id_version;
@@ -52,16 +52,20 @@ struct id_page{
   char hw_version[12];
 };
 
-void print_liblcc_version(){
-  uint32_t lib_version = lcc_library_version();
-
-  Serial.print("LibLCC version: ");
-  Serial.print(LCC_VERSION_MAJOR(lib_version));
-  Serial.print(".");
-  Serial.print(LCC_VERSION_MINOR(lib_version));
-  Serial.print(".");
-  Serial.print(LCC_VERSION_MICRO(lib_version));
-  Serial.println();
+static void incoming_lcc_event(struct lcc_context* ctx, uint64_t event_id){
+  if(event_id == 0x0101020000FF001Bll){
+    // activate switch 10
+    digitalWrite(5, 1);
+  }else if(event_id == 0x0101020000FF001All){
+    // Deactivate switch 10
+    digitalWrite(5, 0);
+  }else if(event_id == 0x0101020000FF001Dll){
+    // Activate switch 11
+    digitalWrite(6, 1);
+  }else if(event_id == 0x0101020000FF001Cll){
+    // Deactivate switch 11
+    digitalWrite(6, 0);
+  }
 }
 
 /**
@@ -82,29 +86,16 @@ int lcc_write(struct lcc_context*, struct lcc_can_frame* lcc_frame){
   return LCC_ERROR_TX;
 }
 
-int lcc_buffer_size(struct lcc_context* ctx){
-#if CAN_CHIP == CAN_CHIP_MCP2518
-  return can.driverTransmitBufferSize() - can.driverTransmitBufferCount();
-#else if CAN_CHIP == CAN_CHIP_MCP2515
-  return can.transmitBufferSize(0) - can.transmitBufferCount(0);
-#endif
-}
-
 void setup () {
-  struct id_page id;
-
   Serial.begin (9600) ;
   while (!Serial) {
     delay (50) ;
     digitalWrite (LED_BUILTIN, !digitalRead (LED_BUILTIN)) ;
   }
 
-  // First let's print out the version of LibLCC
-  print_liblcc_version();
-
   // Delay our startup.  The EEPROM seems to get into a bad state where it will not talk
   // if we come up and come down(which happens when flashing from Arduino IDE)
-  delay(2000);
+  // delay(2000);
 
   SPI.begin () ;
   eeprom.begin();
@@ -113,6 +104,7 @@ void setup () {
   // Assuming we are using the Snowball Creek LCC Shield, we can just read
   // the unique ID from the ID page of the EEPROM
   // We will also set the manufacturer and other related information from the ID page
+  struct id_page id;
   uint64_t unique_id;
   eeprom.read_id_page(sizeof(id), &id);
   unique_id = id.node_id;
@@ -137,8 +129,7 @@ void setup () {
   lcc_context_set_unique_identifer(ctx, unique_id);
 
   // Set the callback function that will be called to write  frame out to the bus
-  // Also give it a callback function that tells LibLCC how many frames can be buffered
-  lcc_context_set_write_function(ctx, lcc_write, lcc_buffer_size);
+  lcc_context_set_write_function(ctx, lcc_write, NULL);
 
   // Set simple node information that is handled by the 'simple node information protocol'
   lcc_context_set_simple_node_information(ctx,
@@ -147,7 +138,6 @@ void setup () {
                                         id.hw_version,
                                         "1.0");
 
-  // Optional: create other contexts to handle other parts of LCC communication
   // Contexts:
   // * Datagram - allows transfers of datagrams to/from the device
   // * Event - event producer/consumer
@@ -156,32 +146,33 @@ void setup () {
   lcc_datagram_context_new(ctx);
   struct lcc_event_context* evt_ctx = lcc_event_new(ctx);
 
-  uint64_t event_id = unique_id << 16;
-  lcc_event_add_event_produced(evt_ctx, event_id);
-  lcc_event_add_event_produced(evt_ctx, event_id + 1);
-  lcc_event_add_event_produced(evt_ctx, event_id + 2);
+  // Listen for the specific events that we are interested in.
+  // In this case, we will listen for events that correspond to throwing/closing
+  // DCC accessory switches 11 and 12.
+  lcc_event_add_event_consumed(evt_ctx, 0x0101020000FF001All);
+  lcc_event_add_event_consumed(evt_ctx, 0x0101020000FF001Bll);
+  lcc_event_add_event_consumed(evt_ctx, 0x0101020000FF001Cll);
+  lcc_event_add_event_consumed(evt_ctx, 0x0101020000FF001Dll);
 
+  // Add a handler function that will be called when an event that we are interested in
+  // is received from the LCC bus
+  lcc_event_set_incoming_event_function(evt_ctx, incoming_lcc_event);
 
   pinMode (LED_BUILTIN, OUTPUT) ;
   digitalWrite (LED_BUILTIN, HIGH) ;
 
-  // Pin 4 is used as a sample digital input that will generate LCC events when it
-  // changes state.  Make sure to put a pull-down on this pin, and you can then trigger
-  // events by connecting and disconnecting it from the +5v rail.
-  pinMode(4, INPUT);
+  // The LEDs that correspond to the switches we are controlling
+  // LED 5 corresponds to switch 10
+  // LED 6 corresponds to switch 11
   pinMode(5, OUTPUT);
   pinMode(6, OUTPUT);
 
-  Serial.print ("Configure CAN Chip: ") ;
 #if CAN_CHIP == CAN_CHIP_MCP2518
-  Serial.println("MCP2518");
   ACAN2517Settings settings (ACAN2517Settings::OSC_40MHz_DIVIDED_BY_2, 125UL * 1000UL) ; // CAN bit rate 125 kb/s
 #else if CAN_CHIP == CAN_CHIP_MCP2515
   Serial.println("MCP2515");
   ACAN2515Settings settings (QUARTZ_FREQUENCY, 125UL * 1000UL) ; // CAN bit rate 125 kb/s
   settings.mRequestedMode = ACAN2515Settings::NormalMode;
-  // We need to lower the transmit and receive buffer size(at least on the Uno), as otherwise
-  // the ACAN2515 library will allocate too much memory
   settings.mReceiveBufferSize = 4;
   settings.mTransmitBuffer0Size = 8;
   // OpenLCB uses the following CAN propogation settings with the MCP2515:
@@ -240,21 +231,5 @@ void loop() {
       Serial.print(F("Claimed alias "));
       Serial.println(lcc_context_alias(ctx), HEX);
     }
-  }
-
-  // Read the value of pin 4 - if it changes state, send an event
-  int currentVal = !!digitalRead(4);
-  if(currentVal != inputValue){
-    inputValue = currentVal;
-    uint64_t event_id = lcc_context_unique_id(ctx) << 16llu;
-
-    if(currentVal == 0){
-      lcc_event_produce_event(lcc_context_get_event_context(ctx), event_id);
-    }else{
-      lcc_event_produce_event(lcc_context_get_event_context(ctx), event_id + 1);
-    }
-
-    // Light up LED with current status
-    digitalWrite(5, currentVal);
   }
 }
