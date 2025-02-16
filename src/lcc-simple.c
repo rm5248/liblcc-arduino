@@ -18,7 +18,7 @@ static int lcc_handle_producer_query(struct lcc_context* ctx, struct lcc_can_fra
     uint64_t event_id = lcc_get_eventid_from_data(frame);
     enum lcc_producer_state state = LCC_PRODUCER_UNKNOWN;
 
-    if(event_list_has_event(&ctx->event_context->events_consumed, event_id)){
+    if(event_list_has_event(&ctx->event_context->events_produced, event_id)){
         struct lcc_can_frame frame;
 
         if(ctx->event_context->producer_state_fn){
@@ -68,7 +68,24 @@ static int lcc_handle_consumer_query(struct lcc_context* ctx, struct lcc_can_fra
         // We consume this event..  not sure how to handle this correctly, but let's just go with 'unknown'
         struct lcc_can_frame frame;
         memset(&frame, 0, sizeof(frame));
-        lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_UNKNOWN | LCC_MTI_EVENT_NUM_PRESENT);
+
+        if(ctx->event_context->consumer_state_fn){
+            enum lcc_consumer_state state = ctx->event_context->consumer_state_fn(ctx, event_id);
+            switch(state){
+            case LCC_CONSUMER_VALID:
+                lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_VALID| LCC_MTI_EVENT_NUM_PRESENT);
+                break;
+            case LCC_CONSUMER_INVALID:
+                lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_INVALID | LCC_MTI_EVENT_NUM_PRESENT);
+                break;
+            case LCC_CONSUMER_UNKNOWN:
+                lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_UNKNOWN | LCC_MTI_EVENT_NUM_PRESENT);
+                break;
+            }
+        }else{
+            lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_UNKNOWN | LCC_MTI_EVENT_NUM_PRESENT);
+        }
+
         lcc_set_lcb_can_frame_type(&frame, 1);
         lcc_set_eventid_in_data(&frame, event_id);
         return ctx->write_function(ctx, &frame);

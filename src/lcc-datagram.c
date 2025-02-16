@@ -20,7 +20,7 @@ static void lcc_datagram_append_bytes(struct lcc_datagram_buffer* datagram, void
 }
 
 struct lcc_datagram_context* lcc_datagram_context_new(struct lcc_context* parent){
-#ifdef ARDUINO
+#ifdef LIBLCC_ENABLE_STATIC_CONTEXT
     static struct lcc_datagram_context ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.parent = parent;
@@ -191,10 +191,10 @@ int lcc_handle_datagram(struct lcc_context* ctx, struct lcc_can_frame* frame){
             // If we don't handle it within the library, call the callback function.
             int handled = 0;
             datagram_ctx->currently_handling_incoming_datagram = 0;
-            if(ctx->memory_context){
+            if(ctx->memory_context && !handled){
                 handled = lcc_memory_try_handle_datagram(ctx->memory_context, source_alias, datagram_ctx->datagram_buffer.buffer, datagram_ctx->datagram_buffer.offset);
             }
-            if(ctx->remote_memory_context){
+            if(ctx->remote_memory_context && !handled){
                 handled = lcc_remote_memory_try_handle_datagram(ctx->remote_memory_context, source_alias, datagram_ctx->datagram_buffer.buffer, datagram_ctx->datagram_buffer.offset);
             }
             if(!handled && datagram_ctx->datagram_received_fn){
@@ -268,9 +268,9 @@ int lcc_datagram_respond_rejected(struct lcc_datagram_context* ctx,
     lcc_set_lcb_variable_field(&frame, ctx->parent, LCC_MTI_DATAGRAM_REJECTED);
     lcc_set_lcb_can_frame_type(&frame, 1);
     lcc_set_flags_and_dest_alias(&frame, LCC_FLAG_FRAME_ONLY, alias);
-    frame.can_len = 2;
-    frame.data[0] = (error_code & 0xFF00) >> 8;
-    frame.data[1] = error_code & 0xFF;
+    frame.can_len = 4;
+    frame.data[2] = (error_code & 0xFF00) >> 8;
+    frame.data[3] = error_code & 0xFF;
 
     ctx->currently_handling_incoming_datagram = 0;
 

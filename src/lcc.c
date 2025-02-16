@@ -135,7 +135,7 @@ static int is_datagram_frame(struct lcc_can_frame* frame){
 }
 
 struct lcc_context* lcc_context_new(){
-#ifdef ARDUINO
+#ifdef LIBLCC_ENABLE_STATIC_CONTEXT
     static struct lcc_context ctx;
     memset(&ctx, 0, sizeof(struct lcc_context));
 
@@ -161,7 +161,7 @@ void lcc_context_free(struct lcc_context* ctx){
         return;
     }
 
-#ifndef ARDUINO
+#ifndef LIBLCC_ENABLE_STATIC_CONTEXT
     if(ctx->datagram_context){
         free(ctx->datagram_context);
     }
@@ -226,6 +226,11 @@ int lcc_context_set_write_function(struct lcc_context* ctx, lcc_write_fn write_f
 
     ctx->write_function = write_fn;
     ctx->write_buffer_avail_function = write_buffer_avail_fn;
+    if( write_buffer_avail_fn ){
+        ctx->write_buffer_size = ctx->write_buffer_avail_function( ctx );
+    }else{
+        ctx->write_buffer_size = 0xA567;
+    }
 
     return LCC_OK;
 }
@@ -338,6 +343,15 @@ int lcc_context_claim_alias(struct lcc_context* ctx){
         return LCC_ERROR_ALIAS_FAILURE;
     }
 
+    if( ctx->write_buffer_avail_function ){
+        if( (ctx->write_buffer_size - ctx->write_buffer_avail_function( ctx ) ) > 0 ){
+            // We can't claim the alias if the messages we still need to write
+            // have not been sent.  Probably this is because there is nobody ACKing
+            // the CAN messages
+            return LCC_ERROR_ALIAS_TX_NOT_EMPTY;
+        }
+    }
+
     ctx->node_alias_state = LCC_NODE_ALIAS_GOOD;
     ctx->state = LCC_STATE_PERMITTED;
 
@@ -367,6 +381,9 @@ int lcc_context_claim_alias(struct lcc_context* ctx){
 
     // Send out our list of events that we produce
     lcc_send_events_produced(ctx);
+
+    // Send out our list of events that we consume
+    lcc_send_events_consumed(ctx);
 
     return LCC_OK;
 }
@@ -576,7 +593,7 @@ uint32_t lcc_library_version(){
     // On Arduino, we can't get the library version from the cmake configuration file.
     // We can at least check the versions when using CMake.
 #define MAJOR 0ll
-#define MINOR 5ll
+#define MINOR 7ll
 #define MICRO 0ll
 
 #ifdef LIBLCC_MAJOR

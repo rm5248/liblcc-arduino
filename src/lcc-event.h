@@ -3,9 +3,13 @@
 #define LIBLCC_EVENT_H
 
 #include "lcc-common.h"
+#include "lcc-clock.h"
 
 struct lcc_event_context;
 struct lcc_context;
+
+#define LCC_EVENT_CONTEXT_CLEAR_EVENTS_PRODUCED (0x01 << 0)
+#define LCC_EVENT_CONTEXT_CLEAR_EVENTS_CONSUMED (0x01 << 1)
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +54,54 @@ int lcc_event_add_event_consumed(struct lcc_event_context* ctx,
                                    uint64_t event_id);
 
 /**
+ * Start a transaction to add many events consumed.
+ * @param ctx
+ * @return
+ */
+int lcc_event_add_event_consumed_transaction_start(struct lcc_event_context* ctx);
+
+/**
+ * End a transaction that added many events at once.
+ * @param ctx
+ * @return
+ */
+int lcc_event_add_event_consumed_transaction_end(struct lcc_event_context* ctx);
+
+/**
+ * Remove this event from the context that we are interested in.
+ *
+ * @param ctx The context to remove the event from
+ * @param event_id The event to remove
+ * @return
+ */
+int lcc_event_remove_event_consumed(struct lcc_event_context* ctx,
+                                   uint64_t event_id);
+
+/**
+ * Clear events from this context
+ *
+ * @param ctx The context to clear events from
+ * @param event_flags Flags determining what events to clear.
+ * @return
+ */
+int lcc_event_clear_events(struct lcc_event_context* ctx, int event_flags);
+
+/**
+ * Set a function that will be called in order to determine the current state of an event
+ * that is consumed by this node.
+ *
+ * @param ctx
+ * @param consumer_state
+ * @return
+ */
+int lcc_event_add_event_consumed_query_fn(struct lcc_event_context* ctx,
+                                            lcc_query_consumer_state_fn consumer_state);
+
+/**
  * Add an event that is logically produced by this node.
+ *
+ * If you are adding many events, consider using lcc_event_add_event_produced_transaction_start
+ * to wrap this function in a transaction when many events are added at once.
  *
  * @param ctx
  * @param event_id The event ID to add
@@ -58,6 +109,20 @@ int lcc_event_add_event_consumed(struct lcc_event_context* ctx,
  */
 int lcc_event_add_event_produced(struct lcc_event_context* ctx,
                                    uint64_t event_id);
+
+/**
+ * Start a transaction to add many events produced.
+ * @param ctx
+ * @return
+ */
+int lcc_event_add_event_produced_transaction_start(struct lcc_event_context* ctx);
+
+/**
+ * End a transaction that added many events at once.
+ * @param ctx
+ * @return
+ */
+int lcc_event_add_event_produced_transaction_end(struct lcc_event_context* ctx);
 
 /**
  * Turn on/off the listening of all events.  Note that if all events are listened to,
@@ -120,6 +185,15 @@ int lcc_event_id_to_accessory_decoder(uint64_t event_id, struct lcc_accessory_ad
  * @return LCC_OK, or LCC_ERROR_EVENT_NOT_ACCESSORY_DECODER if the event is not an accessory decoder event
  */
 int lcc_event_id_to_accessory_decoder_2040(uint64_t event_id, struct lcc_accessory_address* address);
+
+/**
+ * Convert a DCC address to an EventID.  This will correspond to an accessory address between 1-2040.
+ *
+ * @param address The address to convert
+ * @param evnet_id The EventID that corresponds to this address
+ * @return LCC_OK if the address is valid and can be converted
+ */
+int lcc_accessory_decoder_to_event_id_2040(struct lcc_accessory_address* address, uint64_t* event_id);
 
 #ifdef __cplusplus
 } /* extern C */

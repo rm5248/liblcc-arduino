@@ -83,7 +83,7 @@ static int event_list_compare(const void * arg1, const void * arg2){
     return 0;
 }
 
-void event_list_add_event(struct event_list* list, uint64_t event_id){
+void event_list_add_event(struct event_list* list, uint64_t event_id, int sort){
 #if defined(LIBLCC_EVENT_LIST_STATIC_SIZE)
     if(list->len > list->size){
         return;
@@ -109,8 +109,37 @@ void event_list_add_event(struct event_list* list, uint64_t event_id){
     }
 #endif
 
-    // Sort all of the event IDs to make the search(when they come in) easier
-    qsort(list->event_array, list->len, sizeof(int64_t), event_list_compare);
+    if(sort){
+        // Sort all of the event IDs to make sure that the bsearch works
+        qsort(list->event_array, list->len, sizeof(int64_t), event_list_compare);
+    }
+}
+
+void event_list_remove_event(struct event_list* list, uint64_t event_id){
+    if(list->event_array == NULL){
+        return;
+    }
+
+    // Search through the array, moving everything down after the event that we remove.
+    int move_down = 0;
+    int found = 0;
+    for(int x = 0; x < list->len; x++ ){
+        if(list->event_array[x] == event_id){
+            move_down = 1;
+        }
+
+        if(move_down && (x < (list->len - 2))){
+            list->event_array[x] = list->event_array[x + 1];
+        }
+    }
+
+    if(found){
+        list->len = list->len - 1;
+    }
+}
+
+void event_list_clear(struct event_list* list){
+    list->len = 0;
 }
 
 int event_list_has_event(struct event_list* list, uint64_t event_id){
@@ -124,6 +153,10 @@ int event_list_has_event(struct event_list* list, uint64_t event_id){
     }
 
     return 1;
+}
+
+void event_list_sort(struct event_list* list){
+    qsort(list->event_array, list->len, sizeof(int64_t), event_list_compare);
 }
 
 int lcc_send_events_produced(struct lcc_context* ctx){
@@ -167,6 +200,48 @@ int lcc_send_events_produced(struct lcc_context* ctx){
     return LCC_OK;
 }
 
+int lcc_send_events_consumed(struct lcc_context *ctx){
+    struct lcc_can_frame frame;
+    uint64_t event_id;
+
+    if(!ctx->write_function ||
+            !ctx->event_context){
+        return LCC_OK;
+    }
+
+    for(int x = 0; x < ctx->event_context->events_consumed.len; x++){
+        event_id = ctx->event_context->events_consumed.event_array[x];
+
+        memset(&frame, 0, sizeof(frame));
+
+        if(ctx->event_context->consumer_state_fn){
+            enum lcc_consumer_state state = ctx->event_context->consumer_state_fn(ctx, event_id);
+            switch(state){
+            case LCC_CONSUMER_VALID:
+                lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_VALID| LCC_MTI_EVENT_NUM_PRESENT);
+                break;
+            case LCC_CONSUMER_INVALID:
+                lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_INVALID | LCC_MTI_EVENT_NUM_PRESENT);
+                break;
+            case LCC_CONSUMER_UNKNOWN:
+                lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_UNKNOWN | LCC_MTI_EVENT_NUM_PRESENT);
+                break;
+            }
+        }else{
+            lcc_set_lcb_variable_field(&frame, ctx, LCC_MTI_CONSUMER_IDENTIFIED_UNKNOWN | LCC_MTI_EVENT_NUM_PRESENT);
+        }
+
+        lcc_set_lcb_can_frame_type(&frame, 1);
+        lcc_set_eventid_in_data(&frame, event_id);
+        int write_ret = ctx->write_function(ctx, &frame);
+        if(write_ret != LCC_OK){
+            return write_ret;
+        }
+    }
+
+    return LCC_OK;
+}
+
 uint32_t lcc_uint32_from_data(void* data){
     uint32_t retval = 0;
     uint8_t* u8_data = data;
@@ -184,4 +259,15 @@ void lcc_uint32_to_data(void* data, uint32_t value){
     u8_data[1] = ((value & 0x00FF0000) >> 16l) & 0xFF;
     u8_data[2] = ((value & 0x0000FF00) >> 8l) & 0xFF;
     u8_data[3] = ((value & 0x000000FF) >> 0l) & 0xFF;
+}
+
+void lcc_event_id_to_array(uint64_t event_id, uint8_t* array){
+    array[0] = (event_id & 0xFF00000000000000l) >> 56;
+    array[1] = (event_id & 0x00FF000000000000l) >> 48;
+    array[2] = (event_id & 0x0000FF0000000000l) >> 40;
+    array[3] = (event_id & 0x000000FF00000000l) >> 32;
+    array[4] = (event_id & 0x00000000FF000000l) >> 24;
+    array[5] = (event_id & 0x0000000000FF0000l) >> 16;
+    array[6] = (event_id & 0x000000000000FF00l) >> 8;
+    array[7] = (event_id & 0x00000000000000FFl) >> 0;
 }

@@ -37,10 +37,18 @@ struct lcc_event_context;
 
 struct lcc_can_frame;
 
+struct lcc_firmware_upgrade_context;
+
 enum lcc_producer_state{
     LCC_PRODUCER_VALID,
     LCC_PRODUCER_INVALID,
     LCC_PRODUCER_UNKNOWN
+};
+
+enum lcc_consumer_state{
+    LCC_CONSUMER_VALID,
+    LCC_CONSUMER_INVALID,
+    LCC_CONSUMER_UNKNOWN
 };
 
 /**
@@ -67,6 +75,14 @@ typedef void(*lcc_incoming_event_fn)(struct lcc_context* ctx, uint64_t event_id)
  * This is for the Identify Producer message, MTI 0x0914
  */
 typedef enum lcc_producer_state(*lcc_query_producer_state_fn)(struct lcc_context* ctx, uint64_t event_id);
+
+/**
+ * A function that will be called when consumers are being queried.  For the given event,
+ * give back an enum LCC_CONSUMER_<state> determinging what the current state of the event is.
+ *
+ * This is for the Identify Consumer message, MTI 0x08F4
+ */
+typedef enum lcc_consumer_state(*lcc_query_consumer_state_fn)(struct lcc_context* ctx, uint64_t event_id);
 
 /**
  * A function that will be called when a datagram is received from a node.
@@ -148,6 +164,20 @@ typedef void (*lcc_remote_memory_received)(struct lcc_remote_memory_context* ctx
  */
 typedef void (*lcc_remote_memory_read_rejected)(struct lcc_remote_memory_context* ctx, uint16_t alias, uint8_t address_space, uint32_t starting_address, uint16_t error_code, const char* message);
 
+typedef void (*lcc_firmware_upgrade_start)(struct lcc_firmware_upgrade_context* ctx);
+
+/**
+ * Called when data comes in during firmware upgrade.  The data should be written out to the firmware upgrade.
+ * The called function must call either lcc_firmware_write_ok or lcc_firmware_write_error depending on the
+ * result of the write function.
+ */
+typedef void (*lcc_firmware_upgrade_incoming_data)(struct lcc_firmware_upgrade_context* ctx, uint32_t starting_address, void* data, int data_len);
+
+/**
+ * Called when the firmware upgrade is completed, e.g. all data has been successfully transferred.
+ */
+typedef void (*lcc_firmware_upgrade_finished)(struct lcc_firmware_upgrade_context* ctx);
+
 /*
  * Error code definitions used by the library
  */
@@ -167,6 +197,11 @@ typedef void (*lcc_remote_memory_read_rejected)(struct lcc_remote_memory_context
 #define LCC_ERROR_DATAGRAM_IN_PROGRESS -11
 #define LCC_ERROR_MEMORY_TX_IN_PROGRESS -12
 #define LCC_ERROR_EVENT_NOT_ACCESSORY_DECODER -13
+#define LCC_ERROR_EVENT_NOT_REPORT_TIME -14
+/** The given function was called at the incorrect time, e.g. the state required for this method to execute is not met */
+#define LCC_ERROR_INVALID_PROGRAM_STATE -15
+/** The transmit buffer is not empty, so alias cannot be claimed */
+#define LCC_ERROR_ALIAS_TX_NOT_EMPTY -16
 
 /**
  * Struct used to pass frames to/from the library.
@@ -276,6 +311,14 @@ struct lcc_can_frame {
 int lcc_node_id_to_dotted_format(uint64_t node_id, char* buffer, int buffer_len);
 
 void lcc_set_log_function(simplelogger_log_function log_fn);
+
+/**
+ * Given an event ID, turn it into an array
+ *
+ * @param event_id The event ID to turn into an array
+ * @param array The array to place the bytes in.  Must be 8 long.
+ */
+void lcc_event_id_to_array(uint64_t event_id, uint8_t* array);
 
 #ifdef __cplusplus
 } /* extern C */

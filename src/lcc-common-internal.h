@@ -6,6 +6,8 @@
 #ifndef LIBLCC_BUILD
 #error "Internal header, do not use in client code!"
 #endif
+#else
+#define LIBLCC_ENABLE_STATIC_CONTEXT 1
 #endif /* ARDUINO */
 
 #include <stdint.h>
@@ -14,6 +16,16 @@
 
 #ifdef ARDUINO_AVR_UNO
 #define LCC_SIMPLE_NODE_INFO_SMALL 1
+#endif
+
+#ifdef LIBLCC_HAS_CONFIG_H
+#include "lcc-config.h"
+#endif
+
+#ifdef LIBLCC_ENABLE_STATIC_CONTEXT
+#ifndef LIBLCC_EVENT_LIST_STATIC_SIZE
+#define LIBLCC_EVENT_LIST_STATIC_SIZE 10
+#endif
 #endif
 
 #define SIMPLELOGGER_LOG_FUNCTION_NAME lcc_global_log
@@ -110,6 +122,20 @@ struct lcc_event_context{
     struct event_list events_consumed;
     struct event_list events_produced;
     lcc_query_producer_state_fn producer_state_fn;
+    lcc_query_consumer_state_fn consumer_state_fn;
+    uint8_t in_add_produced_event_transaction : 1;
+    uint8_t in_add_consumed_event_transaction : 1;
+};
+
+struct lcc_firmware_upgrade_context{
+    struct lcc_context* parent;
+    uint8_t upgrade_in_progress;
+    uint8_t calling_write_cb;
+    lcc_firmware_upgrade_start start_fn;
+    lcc_firmware_upgrade_incoming_data write_fn;
+    lcc_firmware_upgrade_finished finished_fn;
+    uint16_t alias;
+    uint32_t addr;
 };
 
 struct lcc_context{
@@ -125,6 +151,7 @@ struct lcc_context{
     int16_t node_alias;
     lcc_write_fn write_function;
     lcc_write_buffer_available write_buffer_avail_function;
+    int write_buffer_size;
     void* user_data;
 
     // Simple node information
@@ -141,6 +168,9 @@ struct lcc_context{
 
     // Remote memory handling
     struct lcc_remote_memory_context* remote_memory_context;
+
+    // Firmware upgrade handling
+    struct lcc_firmware_upgrade_context* firmware_upgrade_context;
 };
 
 #define LCC_FLAG_FRAME_ONLY 0
@@ -162,17 +192,35 @@ void lcc_set_eventid_in_data(struct lcc_can_frame* frame, uint64_t event_id);
 
 uint64_t lcc_get_eventid_from_data(struct lcc_can_frame* frame);
 
-void event_list_add_event(struct event_list* list, uint64_t event_id);
+void event_list_add_event(struct event_list* list, uint64_t event_id, int sort);
+
+void event_list_remove_event(struct event_list* list, uint64_t event_id);
+
+void event_list_clear(struct event_list* list);
 
 int event_list_has_event(struct event_list* list, uint64_t event_id);
 
 /**
- * Send out all of the events that we produce.
+ * Sort the event list.  Required for the bsearch to work properly.
+ * @param list
+ */
+void event_list_sort(struct event_list* list);
+
+/**
+ * Send out all of the events that we produce.  Internal method, do not call.
  *
  * @param ctx
  * @return
  */
 int lcc_send_events_produced(struct lcc_context* ctx);
+
+/**
+ * Send out all of the enevts that we consume.  Internal method, do not call.
+ *
+ * @param ctx
+ * @return
+ */
+int lcc_send_events_consumed(struct lcc_context* ctx);
 
 int lcc_handle_datagram(struct lcc_context* ctx, struct lcc_can_frame* frame);
 
@@ -189,6 +237,10 @@ int lcc_memory_try_handle_datagram(struct lcc_memory_context* ctx, uint16_t alia
 int lcc_remote_memory_try_handle_datagram(struct lcc_remote_memory_context* ctx, uint16_t alias, uint8_t* data, int data_len);
 int lcc_remote_memory_handle_datagram_rx_ok(struct lcc_remote_memory_context* ctx, uint16_t alias, uint8_t flags);
 int lcc_remote_memory_handle_datagram_rejected(struct lcc_remote_memory_context* ctx, uint16_t alias, uint16_t error_code, void* optional_data, int optional_len);
+
+int _lcc_firmware_upgrade_freeze(struct lcc_firmware_upgrade_context* ctx, uint16_t alias);
+int _lcc_firmware_upgrade_incoming_write(struct lcc_firmware_upgrade_context* ctx, uint16_t alias, uint32_t starting_address, uint8_t* data, int data_len);
+int _lcc_firmware_upgrade_unfreeze(struct lcc_firmware_upgrade_context* ctx, uint16_t alias);
 
 /**
  * Read a uint32(in big-endian order) from data.  Data must be at least 4 bytes.
